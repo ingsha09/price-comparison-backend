@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = Flask(__name__)
 
@@ -11,13 +12,15 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+TIMEOUT = 8  # seconds
+
+
 def get_amazon_price(product):
     url = f"https://www.amazon.in/s?k={product}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Amazon price selector
         price_tag = soup.select_one("span.a-price-whole")
         if price_tag:
             price = price_tag.get_text(strip=True).replace(",", "")
@@ -28,13 +31,13 @@ def get_amazon_price(product):
     except Exception as e:
         return {"store": "Amazon", "price": "N/A", "link": url, "error": str(e)}
 
+
 def get_flipkart_price(product):
     url = f"https://www.flipkart.com/search?q={product}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Flipkart price selector
         price_tag = soup.select_one("div._30jeq3")
         if price_tag:
             price = price_tag.get_text(strip=True).replace("₹", "").replace(",", "")
@@ -45,13 +48,13 @@ def get_flipkart_price(product):
     except Exception as e:
         return {"store": "Flipkart", "price": "N/A", "link": url, "error": str(e)}
 
+
 def get_meesho_price(product):
     url = f"https://www.meesho.com/search?q={product}"
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        res = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Meesho price selector
         price_tag = soup.select_one("h5.sc-eDvSVe")
         if price_tag:
             price = price_tag.get_text(strip=True).replace("₹", "").replace(",", "")
@@ -62,9 +65,11 @@ def get_meesho_price(product):
     except Exception as e:
         return {"store": "Meesho", "price": "N/A", "link": url, "error": str(e)}
 
+
 @app.route("/")
 def home():
     return "Price Comparison API is running!"
+
 
 @app.route("/compare")
 def compare():
@@ -72,12 +77,20 @@ def compare():
     if not product:
         return jsonify({"error": "Please provide a product name"}), 400
 
-    results = [
-        get_amazon_price(product),
-        get_flipkart_price(product),
-        get_meesho_price(product),
-    ]
+    functions = [get_amazon_price, get_flipkart_price, get_meesho_price]
+    results = []
+
+    with ThreadPoolExecutor() as executor:
+        future_to_func = {executor.submit(func, product): func.__name__ for func in functions}
+
+        for future in as_completed(future_to_func):
+            try:
+                results.append(future.result())
+            except Exception as e:
+                results.append({"store": future_to_func[future], "price": "N/A", "error": str(e)})
+
     return jsonify(results)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
