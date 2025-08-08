@@ -1,70 +1,82 @@
 from flask import Flask, request, jsonify
-import aiohttp
-import asyncio
-import re
+import requests
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-# Helper: Extract first number from HTML text
-def extract_price(text):
-    match = re.search(r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text.replace("\n", " "))
-    return match.group(1).replace(",", "") if match else "N/A"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/127.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-# Async fetch with timeout and error handling
-async def fetch_price(session, url, store_name, price_selector=None):
+def get_amazon_price(product):
+    url = f"https://www.amazon.in/s?k={product}"
     try:
-        async with session.get(url, timeout=10) as response:
-            html = await response.text()
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-            if price_selector and price_selector in html:
-                price = extract_price(html)
-            else:
-                price = "N/A"
+        # Amazon price selector
+        price_tag = soup.select_one("span.a-price-whole")
+        if price_tag:
+            price = price_tag.get_text(strip=True).replace(",", "")
+        else:
+            price = "N/A"
 
-            return {"store": store_name, "price": price, "link": url}
-
+        return {"store": "Amazon", "price": price, "link": url}
     except Exception as e:
-        return {"store": store_name, "price": "N/A", "link": url, "error": str(e)}
+        return {"store": "Amazon", "price": "N/A", "link": url, "error": str(e)}
 
-# Main scraping function
-async def scrape_prices(product_name):
-    product_encoded = product_name.replace(" ", "+")
-    urls = [
-        {
-            "name": "Amazon",
-            "url": f"https://www.amazon.in/s?k={product_encoded}",
-            "selector": "a-price-whole"
-        },
-        {
-            "name": "Flipkart",
-            "url": f"https://www.flipkart.com/search?q={product_encoded}",
-            "selector": "_30jeq3"  # Flipkart price class
-        },
-        {
-            "name": "Meesho",
-            "url": f"https://www.meesho.com/search?q={product_encoded}",
-            "selector": "sc-eDvSVe"  # May need updating
-        }
-    ]
+def get_flipkart_price(product):
+    url = f"https://www.flipkart.com/search?q={product}"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-    async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
-        tasks = [
-            fetch_price(session, store["url"], store["name"], store["selector"])
-            for store in urls
-        ]
-        return await asyncio.gather(*tasks)
+        # Flipkart price selector
+        price_tag = soup.select_one("div._30jeq3")
+        if price_tag:
+            price = price_tag.get_text(strip=True).replace("₹", "").replace(",", "")
+        else:
+            price = "N/A"
+
+        return {"store": "Flipkart", "price": price, "link": url}
+    except Exception as e:
+        return {"store": "Flipkart", "price": "N/A", "link": url, "error": str(e)}
+
+def get_meesho_price(product):
+    url = f"https://www.meesho.com/search?q={product}"
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        # Meesho price selector
+        price_tag = soup.select_one("h5.sc-eDvSVe")
+        if price_tag:
+            price = price_tag.get_text(strip=True).replace("₹", "").replace(",", "")
+        else:
+            price = "N/A"
+
+        return {"store": "Meesho", "price": price, "link": url}
+    except Exception as e:
+        return {"store": "Meesho", "price": "N/A", "link": url, "error": str(e)}
 
 @app.route("/")
 def home():
     return "Price Comparison API is running!"
 
-@app.route("/compare", methods=["GET"])
+@app.route("/compare")
 def compare():
     product = request.args.get("product")
     if not product:
-        return jsonify({"error": "Please provide a 'product' query parameter"}), 400
+        return jsonify({"error": "Please provide a product name"}), 400
 
-    results = asyncio.run(scrape_prices(product))
+    results = [
+        get_amazon_price(product),
+        get_flipkart_price(product),
+        get_meesho_price(product),
+    ]
     return jsonify(results)
 
 if __name__ == "__main__":
