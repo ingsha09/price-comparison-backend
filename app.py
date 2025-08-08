@@ -1,69 +1,71 @@
-import asyncio
-import aiohttp
 from flask import Flask, request, jsonify
-from bs4 import BeautifulSoup
+import aiohttp
+import asyncio
+import re
 
 app = Flask(__name__)
 
-# Fake browser headers to avoid getting blocked
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/115.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9"
-}
+# Helper: Extract first number from HTML text
+def extract_price(text):
+    match = re.search(r'(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)', text.replace("\n", " "))
+    return match.group(1).replace(",", "") if match else "N/A"
 
-# Asynchronous function to fetch price
-async def fetch_price(session, url, selector, store):
+# Async fetch with timeout and error handling
+async def fetch_price(session, url, store_name, price_selector=None):
     try:
-        async with session.get(url, headers=HEADERS, timeout=5) as response:
+        async with session.get(url, timeout=10) as response:
             html = await response.text()
-            soup = BeautifulSoup(html, "html.parser")
-            price_element = soup.select_one(selector)
-            price = price_element.get_text(strip=True) if price_element else "N/A"
-            return {"store": store, "link": url, "price": price}
-    except Exception as e:
-        return {"store": store, "link": url, "price": "N/A", "error": str(e)}
 
-# Main scraper function
-async def scrape_all(product):
-    async with aiohttp.ClientSession() as session:
+            if price_selector and price_selector in html:
+                price = extract_price(html)
+            else:
+                price = "N/A"
+
+            return {"store": store_name, "price": price, "link": url}
+
+    except Exception as e:
+        return {"store": store_name, "price": "N/A", "link": url, "error": str(e)}
+
+# Main scraping function
+async def scrape_prices(product_name):
+    product_encoded = product_name.replace(" ", "+")
+    urls = [
+        {
+            "name": "Amazon",
+            "url": f"https://www.amazon.in/s?k={product_encoded}",
+            "selector": "a-price-whole"
+        },
+        {
+            "name": "Flipkart",
+            "url": f"https://www.flipkart.com/search?q={product_encoded}",
+            "selector": "_30jeq3"  # Flipkart price class
+        },
+        {
+            "name": "Meesho",
+            "url": f"https://www.meesho.com/search?q={product_encoded}",
+            "selector": "sc-eDvSVe"  # May need updating
+        }
+    ]
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
         tasks = [
-            # Amazon
-            fetch_price(
-                session,
-                f"https://www.amazon.in/s?k={product}",
-                "span.a-price-whole",
-                "Amazon"
-            ),
-            # Flipkart
-            fetch_price(
-                session,
-                f"https://www.flipkart.com/search?q={product}",
-                "div._30jeq3",  # Flipkart price selector
-                "Flipkart"
-            ),
-            # Meesho
-            fetch_price(
-                session,
-                f"https://www.meesho.com/search?q={product}",
-                "h5.sc-eDvSVe",  # Meesho price selector (may need update)
-                "Meesho"
-            )
+            fetch_price(session, store["url"], store["name"], store["selector"])
+            for store in urls
         ]
         return await asyncio.gather(*tasks)
 
-# API endpoint
-@app.route("/compare")
-def compare_prices():
-    product = request.args.get("product", "").strip()
+@app.route("/")
+def home():
+    return "Price Comparison API is running!"
+
+@app.route("/compare", methods=["GET"])
+def compare():
+    product = request.args.get("product")
     if not product:
-        return jsonify({"error": "No product specified"}), 400
-    
-    results = asyncio.run(scrape_all(product))
+        return jsonify({"error": "Please provide a 'product' query parameter"}), 400
+
+    results = asyncio.run(scrape_prices(product))
     return jsonify(results)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
