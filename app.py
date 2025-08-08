@@ -73,9 +73,8 @@ def get_meesho_price(product):
 
     return {"store": "Meesho", "price": price, "link": url}
 
-@app.route("/")
-def home():
-    return "Price Comparison API is running!"
+@app.route("/", methods=["GET"])
+def price_comparison():
 
 @app.route("/", methods=["GET"])
 def price_comparison():
